@@ -3,11 +3,13 @@ from rest_framework import viewsets
 from .models import Product, ProductImage, ProductVariation, Sale, SaleItem
 
 from .serializers import *
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, parser_classes
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import BasePermission
 from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.parsers import MultiPartParser, FormParser
+from django.db import transaction
 
 
 class IsAdminUserCustom(BasePermission):
@@ -182,3 +184,57 @@ def add_sale_order(request):
 
     return Response({"message": "Order created successfully", "sale_id": sale.id},
                     status=status.HTTP_201_CREATED)
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, IsAdminUserCustom])
+@parser_classes([MultiPartParser, FormParser])
+def add_product_images(request):
+    product_id = request.data.get('product_id')
+    if not product_id:
+        return Response({"error": "product_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        product = Product.objects.get(id=product_id)
+    except Product.DoesNotExist:
+        return Response({"error": "Product not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    files = request.FILES.getlist('images')
+    if not files:
+        return Response({"error": "At least one image file is required (key: images)"},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    created_images = []
+    try:
+        with transaction.atomic():
+            for file in files:
+                img = ProductImage.objects.create(product=product, image=file)
+                created_images.append(ProductImageSerializer(img, context={'request': request}).data)
+    except Exception as e:
+        return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+    return Response({
+        "message": f"Added {len(created_images)} image(s) to product {product.id}",
+        "product_id": product.id,
+        "images": created_images
+    }, status=status.HTTP_201_CREATED)
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, IsAdminUserCustom])
+def delete_product_image(request):
+    image_id = request.data.get('image_id')
+    if not image_id:
+        return Response({"error": "image_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        img = ProductImage.objects.get(id=image_id)
+    except ProductImage.DoesNotExist:
+        return Response({"error": "Image not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    # delete the binary from storage first
+    if img.image:
+        img.image.delete(save=False)
+
+    img.delete()
+    return Response({"message": "Image deleted"}, status=status.HTTP_200_OK)
+
+
